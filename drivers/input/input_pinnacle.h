@@ -1,6 +1,7 @@
 #pragma once
 
 #include <zephyr/device.h>
+#include <zephyr/kernel.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/drivers/spi.h>
 
@@ -83,6 +84,7 @@ struct pinnacle_data {
     const struct device *dev;
     struct gpio_callback gpio_cb;
     struct k_work work;
+    struct k_work_delayable poll_work;
 };
 
 enum pinnacle_sensitivity {

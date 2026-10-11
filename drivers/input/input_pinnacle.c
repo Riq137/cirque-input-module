@@ -122,15 +122,20 @@ static int pinnacle_spi_write(const struct device *dev, const uint8_t addr, cons
 
 static int set_int(const struct device *dev, const bool en) {
     const struct pinnacle_config *config = dev->config;
-    int ret = gpio_pin_interrupt_configure_dt(&config->dr,
-                                              en ? GPIO_INT_LEVEL_ACTIVE : GPIO_INT_DISABLE);
+
+    if (config->dr.port == NULL) {
+        return 0;
+    }
+
+    int ret = gpio_pin_interrupt_configure_dt(
+        &config->dr, en ? GPIO_INT_LEVEL_ACTIVE : GPIO_INT_DISABLE);
+
     if (ret < 0) {
         LOG_ERR("can't set interrupt");
     }
 
     return ret;
 }
-
 static int pinnacle_clear_status(const struct device *dev) {
     int ret = pinnacle_write(dev, PINNACLE_STATUS1, 0);
     if (ret < 0) {
@@ -451,6 +456,13 @@ static void pinnacle_work_cb(struct k_work *work) {
     }
 }
 
+static void pinnacle_poll_cb(struct k_work *work) {
+    struct pinnacle_data *data =
+        CONTAINER_OF(k_work_delayable_from_work(work), struct pinnacle_data, poll_work);
+
+    k_work_submit(&data->work);
+    k_work_reschedule(&data->poll_work, K_MSEC(5));
+}
 static void pinnacle_gpio_cb(const struct device *port, struct gpio_callback *cb, uint32_t pins) {
     struct pinnacle_data *data = CONTAINER_OF(cb, struct pinnacle_data, gpio_cb);
 
@@ -733,19 +745,25 @@ static int pinnacle_init(const struct device *dev) {
 
     pinnacle_clear_status(dev);
 
-    gpio_pin_configure_dt(&config->dr, GPIO_INPUT);
-    gpio_init_callback(&data->gpio_cb, pinnacle_gpio_cb, BIT(config->dr.pin));
-    ret = gpio_add_callback(config->dr.port, &data->gpio_cb);
-    if (ret < 0) {
-        LOG_ERR("Failed to set DR callback: %d", ret);
-        return -EIO;
-    }
-
     k_work_init(&data->work, pinnacle_work_cb);
+    k_work_init_delayable(&data->poll_work, pinnacle_poll_cb);
 
     pinnacle_write(dev, PINNACLE_FEED_CFG1, feed_cfg1);
 
-    set_int(dev, true);
+    if (config->dr.port != NULL) {
+        gpio_pin_configure_dt(&config->dr, GPIO_INPUT);
+        gpio_init_callback(&data->gpio_cb, pinnacle_gpio_cb, BIT(config->dr.pin));
+        ret = gpio_add_callback(config->dr.port, &data->gpio_cb);
+        if (ret < 0) {
+            LOG_ERR("Failed to set DR callback: %d", ret);
+            return -EIO;
+        }
+
+        set_int(dev, true);
+    } else {
+        LOG_INF("No DR GPIO configured; polling every 5 ms");
+        k_work_reschedule(&data->poll_work, K_MSEC(5));
+    }
 
     return 0;
 }
